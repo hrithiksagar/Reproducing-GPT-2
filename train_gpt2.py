@@ -3,7 +3,23 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F 
 
-#### The below part is written second
+#### 3. The below MLP block is added Third [MLP CLASS]
+class MLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.c_fc = nn.Linear(config.n_embd,4 * config.n_embd )
+        self.gelu = nn.GELU(approximate='tanh') # Activation Function, basicallu like RELU but there is not flat tail, smoother version of relu, these days we can use direct version instead of approximation. Just cause GPT 2 used approximation we are using
+        self. c_proj = nn.Linear(4 * config)
+        # 2 linar projections sandwiched between GELU activation, 
+        # Dead RELU neuron problem = if any neuron falls in the part where if its flat at 0 all the actions fall at that part there is no development for those activations as its multiplied by 0, this is were gelu changes it by a small curve 
+        
+    def foward(self, x):
+        x = self.c_fc(x)
+        x = self.gelu(x)
+        x = self.c_proj(x)
+        return x
+
+#### 2. The below part is written second [BLOCK CLASS]
 class Block(nn.Module):
     def __init__(self.config):
         super().__init__()
@@ -20,7 +36,7 @@ class Block(nn.Module):
     # Can think attention as comunication operation, aggregation/pooling/weighted sum/ reduce operation, all the tokens (1024 tkens lined up) where they exchance the information
     # Both MLP and Attention --> hence called as MAP-REDUCE function
 
-##### The below part is written First
+##### 1. The below part is written First [MAIN CONFIGURATION OF TRANSFORMER SKELETON]
 @dataclass
 class GPTConfig:
     block_size: int = 256
