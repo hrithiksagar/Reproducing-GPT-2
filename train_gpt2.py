@@ -118,10 +118,37 @@ class GPT(nn.Module):
             ln_f = nn.LayerNorm(config.n_embd), # this is the new layer added by GPT 2 only 
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias = False) # Linear layer in the top of the transformer
+     
+    ##### 6. Main Forward Function is written in this stage [MAIN FORWARD FUNCTION]
+    def forward(self, idx, targets=None):
+        # idx is of shape (B, T) - indices = idx = our tokens (inputs) = always of shape (B,T) B=Batch Dimension T=Time Dimension and T<B always as B is the minimum sequence length so these are arranged like a 2D layout, every single row is of size B 
+        B, T = idx.size()
+        assert T <= self.config.block_size, f"cannot forward sequence of length {T}, block size is only {self.config.block_size}"
         
+        # Now lets Forward the token and position embeddings:    
+        pos = torch.arage(0, T, dtype=torch.long, device=idx.device) # Shape (T) arange = a version of ramge but for pytorch. 
+        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (T,n_embd)
+        tok_emb = self.transformer.wte(idx) # toklen embheddingfs of shape (B,T,n_embd)
+        x = tok_emb + pos_emb
+        
+        # Forward the blocks of the transformer
+        for block in self.transformer.h:
+            x = block(x)
+        
+        # Forward the final LayerNorm and the Classifier
+        x = self.transformer.ln_f(x) 
+        logits = self.lm_head(x)        # Shape: (B,T,Vocal_size) Vocab_Size here is the number of possible tokens, a tensor that we are going to obtain 
+        loss = None
+        
+        if targets is None:
+            loss = F.cross_entropy(logits.view(-1,logits.size(-1)), targets.view(-1))
+        
+        return logits, loss
+    ##### 6 END of Function
     
     ##### 5. The below code Classmethod is being added as 5th block [@CLASSMETHOD from_pretrained]
         # from_pretrained is a constructor or class method in python, that retunrs the GPT object of we give GPT type (gpt-2 in our case)
+    
     @classmethod
     def from_pretrained(cls, model_type):
         """ 
@@ -189,5 +216,15 @@ class GPT(nn.Module):
         return model
     
 ##----------------------------------------------------------
+num_return_sequences = 5
+max_length = 30
 model = GPT.from_pretrained('gpt2')
-print("Didn't crash yay!")
+model.eval()
+model.to('cuda') # moving the whole model to GPU from CPU
+
+# model = GPT.from_pretrained('gpt2')
+# print("Didn't crash yay!")
+
+## if we did not crash and all the values are exaclty as equal to the original GPT wandbs then we get a confidence that it is working and we can further build the generation code 
+# now we should write main forward function: 6
+
