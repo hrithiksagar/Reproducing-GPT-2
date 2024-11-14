@@ -10,12 +10,15 @@ class Block(nn.Module):
         self.ln_1 = nn.LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = nn.LayerNorm(config.n_embd)
-        self.mlp = MLP(config)
+        self.mlp = MLP(config) # this block needs to be implimented still --> 3rd Block
+        # happens wiht every single token individualiy, noinfo is bing collected or exchanged between tokens, this is a MAP function
     
     def foward(self, x):
-        x = x+ self.attn(self.ln_1(x))
-        x = x+self.attn(self.ln_2(x))
+        x = x+ self.attn(self.ln_1(x)) # pre normalization version, layer normalization 1
+        x = x+self.attn(self.ln_2(x)) # attentionis a REDUCE function
         return x
+    # Can think attention as comunication operation, aggregation/pooling/weighted sum/ reduce operation, all the tokens (1024 tkens lined up) where they exchance the information
+    # Both MLP and Attention --> hence called as MAP-REDUCE function
 
 ##### The below part is written First
 @dataclass
