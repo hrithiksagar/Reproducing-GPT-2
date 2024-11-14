@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F 
+import math
 
 #### 4. The below ATTENTION Class is added fourth [CAUSAL SELF ATTENTION BLOCK]
 class CausalSelfAttention(nn.Module):
@@ -49,7 +50,7 @@ class CausalSelfAttention(nn.Module):
         
         # these are the calculations that follow
         att = (q @ k.transpose(-2,-1))*(1.0/math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf')) # auto regressive mask that makes sure that, the tokens only attend to the tokens before them and NEVER to tokens in the future 
+        # att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf')) # auto regressive mask that makes sure that, the tokens only attend to the tokens before them and NEVER to tokens in the future 
         att = F.softmax(att, dim =1 ) # normalizes the attentions so they sums to 1 always
         y = att @ v # attention matrix multiple with values to do weighted sum of values of tokens that were found as interesting the previous step
                     # (B,nh,T,T) * (B,nh,T,hs) --> (B,nh,T,hs)
@@ -126,7 +127,7 @@ class GPT(nn.Module):
         assert T <= self.config.block_size, f"cannot forward sequence of length {T}, block size is only {self.config.block_size}"
         
         # Now lets Forward the token and position embeddings:    
-        pos = torch.arage(0, T, dtype=torch.long, device=idx.device) # Shape (T) arange = a version of ramge but for pytorch. 
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device) # Shape (T) arange = a version of ramge but for pytorch. 
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (T,n_embd)
         tok_emb = self.transformer.wte(idx) # toklen embheddingfs of shape (B,T,n_embd)
         x = tok_emb + pos_emb
@@ -228,5 +229,52 @@ max_length = 30
 model = GPT.from_pretrained('gpt2')
 model.eval()
 model.to('cuda') # moving the whole model to GPU from CPU
+print("Didn't crash yet!")
 
+
+##### 7. PREFIX Tokens Creation started here below. 
+# so the plan is to make GPT 2 generate a text for a prefix text, that is 
+"""Hello, I'm a language model,...""" 
+
+import tiktoken # Library from OpenAI
+enc = tiktoken.get_encoding('gpt2') # encoding that is developed for GPT2
+tokens = enc.encode("Hello, I'm a language model,")
+"""
+    The above line will Encode this text to get a list of integer tokens which will look like this: 
+    15496, 11, 314, 1101, 257, 3303, 2746, 11   # [Shape = (8,)]
+    - got these from this app: https://tiktokenizer.vercel.app/?model=gpt2 for "Hello, I'm a language model,"
+"""
+tokens = torch.tensor(tokens, dtype = torch.long) # (8, ), those texts that were encoded and converted to list will be tensorized here of 8 tokens hence shape (8, )
+tokens = tokens.unsqueeze(0).repeat(num_return_sequences,1) # (5,8) # now we are repilicating those 8 tokens in the previous step for 5 times, to get 5 rows of 8 tokens which will be the initial input x that will live on GPU 
+x = tokens.to('cuda')
+
+# Generate rightg now, x's shape is (B, T), where B=5, T=8
+# set the seed to  42
+torch.manual_seed(42)
+torch.cuda.manual_seed(42)
+while x.size(1)<max_length:
+    # Forward the model to get the logits 
+    with torch.no_grad():
+        logits = model(x) # (B,T,Vocab_size)
+            # Take the logits at the last position
+        logits = logits[:,-1,:] # (B, vocab_size)
+            # Get the probabilities
+        probs = F.softmax(logits, dim=-1)
+            # Do top K sampling of 50 (As hugging face kept this as default)
+            # all the probabilities after top 50 will be equated to 0
+            # topK_probs here becomes (5,50), topK_indinces is (5,50)
+        topK_probs, topK_indinces = torch.topk(probs, 50, dim=-1)
+            # Select a token from the top-k probabilities
+        ix = torch.multinomial(topK_probs, 1) # (B, 1)
+            # Gather the corresponding indices
+        xcol = torch.gather(topK_indinces, -1, ix) # (B,1)
+            # append to the sequence
+        x = torch.cat((x,xcol), dim=1)
+
+# print the generated text
+for i in range(num_return_sequences):
+    tokens = x[i, :max_length].tolist()
+    decoded = enc.decode(tokens)
+    print(">", decoded) 
+        
 
