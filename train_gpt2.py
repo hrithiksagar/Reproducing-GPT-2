@@ -144,7 +144,7 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits.view(-1,logits.size(-1)), targets.view(-1))
         
         return logits, loss
-    ##### 6 END of Function
+    ##### 6 END of Function and few changes in Main code for testing the model
     
     ##### 5. The below code Classmethod is being added as 5th block [@CLASSMETHOD from_pretrained]
         # from_pretrained is a constructor or class method in python, that retunrs the GPT object of we give GPT type (gpt-2 in our case)
@@ -216,15 +216,17 @@ class GPT(nn.Module):
         return model
     
 ##----------------------------------------------------------
+# model = GPT.from_pretrained('gpt2')
+# print("Didn't crash yay!")
+
+## if we did not crash and all the values are exaclty as equal to the original GPT wandbs then we get a confidence that it is working and we can further build the generation code 
+# now we should write main forward function: 6
+
+##### 6 Continuation - changed few main running code blocks
 num_return_sequences = 5
 max_length = 30
 model = GPT.from_pretrained('gpt2')
 model.eval()
 model.to('cuda') # moving the whole model to GPU from CPU
 
-# model = GPT.from_pretrained('gpt2')
-# print("Didn't crash yay!")
-
-## if we did not crash and all the values are exaclty as equal to the original GPT wandbs then we get a confidence that it is working and we can further build the generation code 
-# now we should write main forward function: 6
 
