@@ -141,7 +141,7 @@ class GPT(nn.Module):
         logits = self.lm_head(x)        # Shape: (B,T,Vocal_size) Vocab_Size here is the number of possible tokens, a tensor that we are going to obtain 
         loss = None
         
-        if targets is None:
+        if targets is not None:
             loss = F.cross_entropy(logits.view(-1,logits.size(-1)), targets.view(-1))
         
         return logits, loss
@@ -228,7 +228,15 @@ num_return_sequences = 5
 max_length = 30
 model = GPT.from_pretrained('gpt2')
 model.eval()
-model.to('cuda') # moving the whole model to GPU from CPU
+# model.to('cuda') # moving the whole model to GPU from CPU
+# Attempt to autoconnect to device thats available:
+device = 'cpu'
+if torch.cuda.is_available():
+    device = 'cuda'
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    device = "mps" # APPLE silicon chip
+        
+model.to(device)
 print("Didn't crash yet!")
 
 
@@ -255,7 +263,9 @@ torch.cuda.manual_seed(42)
 while x.size(1)<max_length:
     # Forward the model to get the logits 
     with torch.no_grad():
-        logits = model(x) # (B,T,Vocab_size)
+        # import IPython ; IPython.embed() ; exit(1)
+        logits, _ = model(x) # (B,T,Vocab_size) # Added ", _" it was not there in the tutorial by Mr. Karpathy
+        # print("Passed logits")
             # Take the logits at the last position
         logits = logits[:,-1,:] # (B, vocab_size)
             # Get the probabilities
