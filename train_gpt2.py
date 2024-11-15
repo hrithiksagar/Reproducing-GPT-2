@@ -83,7 +83,7 @@ class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.ln_1 = nn.LayerNorm(config.n_embd)
-        self.attn = CausalSelfAttention(config) # this is still not written, it will be written after MLP (3rd class) as a 4th class
+        self.attn = CausalSelfAttention(config) # this is still not written at that commit (NOW written), it will be written after MLP (3rd class) as a 4th class
         self.ln_2 = nn.LayerNorm(config.n_embd)
         self.mlp = MLP(config) # this block needs to be implimented still --> 3rd Block
         # happens wiht every single token individualiy, noinfo is bing collected or exchanged between tokens, this is a MAP function
@@ -102,7 +102,7 @@ class GPTConfig:
     block_size: int = 1024  # Max Sequence Length
     vocab_size: int = 50257 # Number of tokens = 50,000 BPE Merges + 256 bytes + 1 <|endoftext|> token
     n_layer: int = 12       # Number of layers
-    n_head: int = 7         # Number of heads
+    n_head: int = 12 # 7         # Number of heads
     n_embd: int = 768       # Number of dimensions 
     
 class GPT(nn.Module):
@@ -131,19 +131,16 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (T,n_embd)
         tok_emb = self.transformer.wte(idx) # toklen embheddingfs of shape (B,T,n_embd)
         x = tok_emb + pos_emb
-        
         # Forward the blocks of the transformer
         for block in self.transformer.h:
             x = block(x)
-        
         # Forward the final LayerNorm and the Classifier
         x = self.transformer.ln_f(x) 
         logits = self.lm_head(x)        # Shape: (B,T,Vocal_size) Vocab_Size here is the number of possible tokens, a tensor that we are going to obtain 
-        loss = None
-        
+        loss = None        
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1,logits.size(-1)), targets.view(-1))
-        
+
         return logits, loss
     ##### 6 END of Function and few changes in Main code for testing the model
     
@@ -219,72 +216,119 @@ class GPT(nn.Module):
 ##----------------------------------------------------------
 # model = GPT.from_pretrained('gpt2')
 # print("Didn't crash yay!")
-
 ## if we did not crash and all the values are exaclty as equal to the original GPT wandbs then we get a confidence that it is working and we can further build the generation code 
 # now we should write main forward function: 6
+##-----------------------------------------------------------
 
-##### 6 Continuation - changed few main running code blocks
-num_return_sequences = 5
-max_length = 30
-model = GPT.from_pretrained('gpt2')
-model.eval()
-# model.to('cuda') # moving the whole model to GPU from CPU
+##### 8. Training loop
 # Attempt to autoconnect to device thats available:
 device = 'cpu'
 if torch.cuda.is_available():
     device = 'cuda'
 elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     device = "mps" # APPLE silicon chip
-        
-model.to(device)
-print("Didn't crash yet!")
-
-
-##### 7. PREFIX Tokens Creation started here below. 
-# so the plan is to make GPT 2 generate a text for a prefix text, that is 
-"""Hello, I'm a language model,...""" 
+    
+# device = 'cpu' # OVERRIDE
 
 import tiktoken # Library from OpenAI
 enc = tiktoken.get_encoding('gpt2') # encoding that is developed for GPT2
-tokens = enc.encode("Hello, I'm a language model,")
+with open('input.txt', 'r') as f:
+    text = f.read()
+text = text[:1000]
+tokens = enc.encode(text)
+B, T = 4, 32
+buf = torch.tensor(tokens[:B*T + 1])
+# we cant move buf to device directly, we have to do this:
+buf = buf.to(device)
+x = buf[:-1].view(B, T)
+y = buf[1:].view(B, T)
+x, y = x.to(device), y.to(device)
+
+# get logits
+model = GPT(GPTConfig())
+model.to(device)
+# logits, loss = model(x,y)
+
+print("here")
+# print(logits.shape)
+# print(loss)
+optimizer = torch.optim.AdamW(model.parameters(), lr = 3e-4) # this learning rate is a very good default learning rate, that we want to run at. avery early debugging stage. 
+for i in range(1000):
+    optimizer.zero_grad() # Always start with zero gradients
+    logits, loss = model(x,y)
+    loss.backward() # Adds to gradients (Gradients + loss) accumilates gradients from the loss 
+    optimizer.step() # step funtion to update the parameters to decrease the loss
+    print(f"step {i}, loss: {loss.item()}") # .item is used becuase loss is a tensor with single element - this will convert it to a single float and float will not live on CPU 
+    # pytorch will the take the single dimension tensors ships it to CPU and convert it to a  float that we can print. 
+    import sys; sys.exit(0)
 """
-    The above line will Encode this text to get a list of integer tokens which will look like this: 
-    15496, 11, 314, 1101, 257, 3303, 2746, 11   # [Shape = (8,)]
-    - got these from this app: https://tiktokenizer.vercel.app/?model=gpt2 for "Hello, I'm a language model,"
+this prints:
+using device: cuda
+tensor (11.0886, grad_fn=<NllLossBackward0>) # printed loss
 """
-tokens = torch.tensor(tokens, dtype = torch.long) # (8, ), those texts that were encoded and converted to list will be tensorized here of 8 tokens hence shape (8, )
-tokens = tokens.unsqueeze(0).repeat(num_return_sequences,1) # (5,8) # now we are repilicating those 8 tokens in the previous step for 5 times, to get 5 rows of 8 tokens which will be the initial input x that will live on GPU 
-x = tokens.to('cuda')
+####### 8 END -------------------------------------------------------
 
-# Generate rightg now, x's shape is (B, T), where B=5, T=8
-# set the seed to  42
-torch.manual_seed(42)
-torch.cuda.manual_seed(42)
-while x.size(1)<max_length:
-    # Forward the model to get the logits 
-    with torch.no_grad():
-        # import IPython ; IPython.embed() ; exit(1)
-        logits, _ = model(x) # (B,T,Vocab_size) # Added ", _" it was not there in the tutorial by Mr. Karpathy
-        # print("Passed logits")
-            # Take the logits at the last position
-        logits = logits[:,-1,:] # (B, vocab_size)
-            # Get the probabilities
-        probs = F.softmax(logits, dim=-1)
-            # Do top K sampling of 50 (As hugging face kept this as default)
-            # all the probabilities after top 50 will be equated to 0
-            # topK_probs here becomes (5,50), topK_indinces is (5,50)
-        topK_probs, topK_indinces = torch.topk(probs, 50, dim=-1)
-            # Select a token from the top-k probabilities
-        ix = torch.multinomial(topK_probs, 1) # (B, 1)
-            # Gather the corresponding indices
-        xcol = torch.gather(topK_indinces, -1, ix) # (B,1)
-            # append to the sequence
-        x = torch.cat((x,xcol), dim=1)
+## -------------------------------------------------------------------
 
-# print the generated text
-for i in range(num_return_sequences):
-    tokens = x[i, :max_length].tolist()
-    decoded = enc.decode(tokens)
-    print(">", decoded) 
-        
 
+
+# ##### 6 Continuation - changed few main running code blocks
+# num_return_sequences = 5
+# max_length = 30
+# model = GPT.from_pretrained('gpt2')
+# model.eval()
+# model.to('cuda') # moving the whole model to GPU from CPU
+# model.to(device)
+# print("Didn't crash yet!")
+
+
+# ##### 7. PREFIX Tokens Creation started here below. 
+# # so the plan is to make GPT 2 generate a text for a prefix text, that is 
+# """Hello, I'm a language model,...""" 
+# # Get a data Batch
+# import tiktoken # Library from OpenAI
+# enc = tiktoken.get_encoding('gpt2') # encoding that is developed for GPT2
+# tokens = enc.encode("Hello, I'm a language model,")
+# """
+#     The above line will Encode this text to get a list of integer tokens which will look like this: 
+#     15496, 11, 314, 1101, 257, 3303, 2746, 11   # [Shape = (8,)]
+#     - got these from this app: https://tiktokenizer.vercel.app/?model=gpt2 for "Hello, I'm a language model,"
+# """
+# tokens = torch.tensor(tokens, dtype = torch.long) # (8, ), those texts that were encoded and converted to list will be tensorized here of 8 tokens hence shape (8, )
+# tokens = tokens.unsqueeze(0).repeat(num_return_sequences,1) # (5,8) # now we are repilicating those 8 tokens in the previous step for 5 times, to get 5 rows of 8 tokens which will be the initial input x that will live on GPU 
+# x = tokens.to('cuda')
+
+
+
+# # Generate rightg now, x's shape is (B, T), where B=5, T=8
+# # set the seed to  42
+# torch.manual_seed(42)
+# torch.cuda.manual_seed(42)
+# while x.size(1)<max_length:
+#     # Forward the model to get the logits 
+#     with torch.no_grad():
+#         # import IPython ; IPython.embed() ; exit(1)
+#         logits, _ = model(x) # (B,T,Vocab_size) # Added ", _" it was not there in the tutorial by Mr. Karpathy
+#         # print("Passed logits")
+#             # Take the logits at the last position
+#         logits = logits[:,-1,:] # (B, vocab_size)
+#             # Get the probabilities
+#         probs = F.softmax(logits, dim=-1)
+#             # Do top K sampling of 50 (As hugging face kept this as default)
+#             # all the probabilities after top 50 will be equated to 0
+#             # topK_probs here becomes (5,50), topK_indinces is (5,50)
+#         topK_probs, topK_indinces = torch.topk(probs, 50, dim=-1)
+#             # Select a token from the top-k probabilities
+#         ix = torch.multinomial(topK_probs, 1) # (B, 1)
+#             # Gather the corresponding indices
+#         xcol = torch.gather(topK_indinces, -1, ix) # (B,1)
+#             # append to the sequence
+#         x = torch.cat((x,xcol), dim=1)
+
+# # print the generated text
+# for i in range(num_return_sequences):
+#     tokens = x[i, :max_length].tolist()
+#     decoded = enc.decode(tokens)
+#     print(">", decoded) 
+    
+###### 6 END
