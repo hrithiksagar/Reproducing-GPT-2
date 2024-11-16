@@ -213,65 +213,101 @@ class GPT(nn.Module):
 
         return model
     
-##----------------------------------------------------------
+##---------------------------------------------------------------------------------------------------------------------------------------
 # model = GPT.from_pretrained('gpt2')
 # print("Didn't crash yay!")
 ## if we did not crash and all the values are exaclty as equal to the original GPT wandbs then we get a confidence that it is working and we can further build the generation code 
 # now we should write main forward function: 6
-##-----------------------------------------------------------
+##-------------------------------------------------------------------------------------------
 
-##### 8. Training loop
-# Attempt to autoconnect to device thats available:
-device = 'cpu'
-if torch.cuda.is_available():
-    device = 'cuda'
-elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-    device = "mps" # APPLE silicon chip
+# ##### 8. Training loop
+# # Attempt to autoconnect to device thats available:
+# device = 'cpu'
+# if torch.cuda.is_available():
+#     device = 'cuda'
+# elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+#     device = "mps" # APPLE silicon chip
     
-# device = 'cpu' # OVERRIDE
+# # device = 'cpu' # OVERRIDE
 
-import tiktoken # Library from OpenAI
-enc = tiktoken.get_encoding('gpt2') # encoding that is developed for GPT2
-with open('input.txt', 'r') as f:
-    text = f.read()
-text = text[:1000]
-tokens = enc.encode(text)
-B, T = 4, 32
-buf = torch.tensor(tokens[:B*T + 1])
-# we cant move buf to device directly, we have to do this:
-buf = buf.to(device)
-x = buf[:-1].view(B, T)
-y = buf[1:].view(B, T)
-x, y = x.to(device), y.to(device)
+# import tiktoken # Library from OpenAI
+# enc = tiktoken.get_encoding('gpt2') # encoding that is developed for GPT2
+# with open('input.txt', 'r') as f:
+#     text = f.read()
+# text = text[:1000]
+# tokens = enc.encode(text)
+# B, T = 4, 32
+# buf = torch.tensor(tokens[:B*T + 1])
+# # we cant move buf to device directly, we have to do this:
+# buf = buf.to(device)
+# x = buf[:-1].view(B, T)
+# y = buf[1:].view(B, T)
+# x, y = x.to(device), y.to(device)
 
-# get logits
-model = GPT(GPTConfig())
-model.to(device)
-# logits, loss = model(x,y)
+# # get logits
+# model = GPT(GPTConfig())
+# model.to(device)
+# # logits, loss = model(x,y)
 
-print("here")
-# print(logits.shape)
-# print(loss)
-optimizer = torch.optim.AdamW(model.parameters(), lr = 3e-4) # this learning rate is a very good default learning rate, that we want to run at. avery early debugging stage. 
-for i in range(1000):
-    optimizer.zero_grad() # Always start with zero gradients
-    logits, loss = model(x,y)
-    loss.backward() # Adds to gradients (Gradients + loss) accumilates gradients from the loss 
-    optimizer.step() # step funtion to update the parameters to decrease the loss
-    print(f"step {i}, loss: {loss.item()}") # .item is used becuase loss is a tensor with single element - this will convert it to a single float and float will not live on CPU 
-    # pytorch will the take the single dimension tensors ships it to CPU and convert it to a  float that we can print. 
-    import sys; sys.exit(0)
-"""
-this prints:
-using device: cuda
-tensor (11.0886, grad_fn=<NllLossBackward0>) # printed loss
-"""
-####### 8 END -------------------------------------------------------
+# print("here")
+# # print(logits.shape)
+# # print(loss)
+# optimizer = torch.optim.AdamW(model.parameters(), lr = 3e-4) # this learning rate is a very good default learning rate, that we want to run at. avery early debugging stage. 
+# for i in range(1000):
+#     optimizer.zero_grad() # Always start with zero gradients
+#     logits, loss = model(x,y)
+#     loss.backward() # Adds to gradients (Gradients + loss) accumilates gradients from the loss 
+#     optimizer.step() # step funtion to update the parameters to decrease the loss
+#     print(f"step {i}, loss: {loss.item()}") # .item is used becuase loss is a tensor with single element - this will convert it to a single float and float will not live on CPU 
+#     # pytorch will the take the single dimension tensors ships it to CPU and convert it to a  float that we can print. 
+#     import sys; sys.exit(0)
+# """
+# this prints:
+# using device: cuda
+# tensor (11.0886, grad_fn=<NllLossBackward0>) # printed loss
+# """
+# ####### 8 END -------------------------------------------------------
 
 ## -------------------------------------------------------------------
 
+###### 9 Building DATALODER LITE
+# the above 8th Block will optimize for 1 batch
+# but we want to optimize for XY batches and create a small data loader that makes sure that we are always getting a fresh batch 
 
+import tiktoken
 
+class DataLoaderLite:
+    def __init__(self, B, T):
+        self.B = B
+        self.T = T
+        
+        # at init load tokens form dick and store them in memory
+        with open('input.input.txt', 'r') as f:
+            text = f.read
+        enc = tiktoken.get_encoding('gpt2')
+        tokens = enc.encode(text)
+        self.tokens = torch.tensor(tokens)
+        print(f"loaded {len(self.tokens)} tokens")
+        print(f"1 epoch = {len(self.tokens)//(B*T)} batches") # prints number of batches in a single epoch iterating over this dataset  
+        
+        # State
+        self.current_position = 0 # start at position 0
+            
+    def next_batch(self):
+        B, T = self.B, self.T
+        buf = self.tokens[self.current_position: self.current_position+B*T+1]
+        x = (buf [:-1]). view(B, T) # inputs
+        y = (buf [1:]).view(B,T) # targets
+        # advance the position in the tensor
+        self. current_position += B * T # its important to always advance our position by B*T 
+        # if loading the next batch would be out of bounds, reset
+        if self.current_position + (B * T + 1) > len(self. tokens): # if we run out of data then we loob back to 0 
+            self.current_position = 0
+        return x, y
+        
+
+##### 9 ENDED HERE
+##---------------------------------------------------------------------------------------------------------
 # ##### 6 Continuation - changed few main running code blocks
 # num_return_sequences = 5
 # max_length = 30
@@ -281,7 +317,7 @@ tensor (11.0886, grad_fn=<NllLossBackward0>) # printed loss
 # model.to(device)
 # print("Didn't crash yet!")
 
-
+##------------------------------------------------------------------------------
 # ##### 7. PREFIX Tokens Creation started here below. 
 # # so the plan is to make GPT 2 generate a text for a prefix text, that is 
 # """Hello, I'm a language model,...""" 
@@ -298,8 +334,10 @@ tensor (11.0886, grad_fn=<NllLossBackward0>) # printed loss
 # tokens = tokens.unsqueeze(0).repeat(num_return_sequences,1) # (5,8) # now we are repilicating those 8 tokens in the previous step for 5 times, to get 5 rows of 8 tokens which will be the initial input x that will live on GPU 
 # x = tokens.to('cuda')
 
+##------------------------------------------------------------------------------
 
 
+##------------------------------------------------------------------------------
 # # Generate rightg now, x's shape is (B, T), where B=5, T=8
 # # set the seed to  42
 # torch.manual_seed(42)
@@ -332,3 +370,4 @@ tensor (11.0886, grad_fn=<NllLossBackward0>) # printed loss
 #     print(">", decoded) 
     
 ###### 6 END
+##------------------------------------------------------------------------------
