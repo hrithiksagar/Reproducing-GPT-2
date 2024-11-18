@@ -287,8 +287,10 @@ class DataLoaderLite:
         
         # at init load tokens form dick and store them in memory
         with open('input.txt', 'r') as f:
-            text = f.read
-        # text = text[:1000] if isinstance(text, str) else ""
+            text = f.read()
+            
+        # print(f"text type: {type(text)}, text value: {text}")
+        
         enc = tiktoken.get_encoding('gpt2')
         tokens = enc.encode(text)
         self.tokens = torch.tensor(tokens)
@@ -325,7 +327,7 @@ for i in range(50):
     logits, loss = model(x,y)
     loss.backward()
     optimizer.step()
-    printf(f"step {i}, loss: {loss.item()}")
+    print(f"step {i}, loss: {loss.item()}")
 
 ##### 9 ENDED HERE
 ##---------------------------------------------------------------------------------------------------------
