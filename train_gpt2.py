@@ -62,7 +62,7 @@ class CausalSelfAttention(nn.Module):
         ## Flash Attention 
             #  will be introduced here, it takes these 4 lines and impliments them in a very very fast manner. It is a kernal fusion operation  --> this kernal fusion is the one that "torch.compile" cannot find and fusion it. As it requirs algorithmeic re-write of how attention is imlimented using those 4 lines to merge them and write in lesser lines. Fa does more FLOPS than the attention done in thosen 4 lines here but FA is significantly faster (7.6x faster) Because, FA is very mindful about the memory hierarchy (The GPU element wise calculation, reading and writing to and fro from GPU and CPU stuff discussed in DataLoaderLite Optimizaiton Part, see that for reference) Like whats in HBA whats in SM fusions/orchestrates the computaion in such a way that we have very less reads/writes as in device computations are very very very faster than moving between GPU and CPU.  So even if we are doing lots of FLOPS it is still faster than loading the data between GPU and CPU 
             ## This has reduced the compile time to 50% faster - earlier it was 550ms -  now it is 220ms. 
-            # Till now with all the GPU oeprations such as Torch.compile, flash attention, Moving the logits to bfloat16 from float32 we managed to reduce the time from 1200ms to 220ms. thats very big difference. 
+            # Till now with all the GPU operations such as Torch.compile, flash attention, Moving the logits to bfloat16 from float32 we managed to reduce the time from 1200ms to 220ms. thats very big difference. 
 
         y = F.scaled_dot_product_attention(q,k,v) #, is_casual=True) # FLASH ATTENTION
         y = y.transpose(1,2).contiguous().view(B,T,C) # re-assemble all heads outputs side by side (concatenation operation)
@@ -352,7 +352,8 @@ if torch.cuda.is_available():
 train_loader = DataLoaderLite(B=16, T=1024) # DataLoaderLite(B=4, T=32) changing from this to new higher value sbecause thats what the real world data be like. T =. max_sequence_length of the actual GPT 2 model 
 
 # Get logits 
-model = GPT(GPTConfig)
+model = GPT(GPTConfig(vocab_size=50304)) # overriding vocab size because - 50257 is a ugly number [Odd number, not much power of 2s] 50304 is a good number with many powers of 2. this is like adding fake tokens in the vocab size. 
+    # So just by making the voca size number from Ugly to good we reduced the computation speed by 20ms from 220ms to 199ms 
 model.to(device)
 model = torch.compile(model)    ## torch.compile -> basically a compiler for Neural Networks such as GCC for C/C++ code. Extremely simple to use - model = torch.compile(model) . Makes the code lot faster
 # It was 899ms after few speeding up functions but then using torch.compile the time reduced to 550ms thats a very huge differece 
