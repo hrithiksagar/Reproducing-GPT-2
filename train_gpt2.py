@@ -119,6 +119,10 @@ class GPT(nn.Module):
             ln_f = nn.LayerNorm(config.n_embd), # this is the new layer added by GPT 2 only 
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias = False) # Linear layer in the top of the transformer
+        
+        # Weights Sharing Scheme - As per the GPT 2 paper, they have implimented it in this way:
+        self.transformer.wte.weight = self.lm_head.weight
+            # Here, we are taking the wte.weight and redirectign it to point to the LM_Head, So this copies the data pointer then we will be left with single tensor which is going to be used Twice in the forward pass
      
     ##### 6. Main Forward Function is written in this stage [MAIN FORWARD FUNCTION]
     def forward(self, idx, targets=None):
