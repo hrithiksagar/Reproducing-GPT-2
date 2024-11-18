@@ -365,10 +365,32 @@ torch.set_float32_matmul_precision('high') # tell pytroch what kind of kernals i
     # this has decreased the time of optimizing, can be observed if you comment this line and run the optimizwer loop, time taken will be 1200ms, but this will make it to 800ms - so how? tf32 in principle offers a lot faster throughput https://youtu.be/l8pRSuU81PU?t=5966 (go back 20-30 sec) 
     # tf32 will crop out mantissa of the Float32 hence, reducing the size while still being the, look at this image, path: "tf32 bf16.png" 
     
+## Learning Rate Scheduler - Cosine Decary Learning Scheduler
+    # Taken from GPT 3 papers. Uses Cosine Decary Learning Scheduler with warmup
+    # lr starts right at 0 and then linearly ranks up over some amount of time and then comes down with the cosine sort of shape refer the screen shot "lr_cosine_decay.png" come down to minimum learning rate
+    
+max_lr = 3e-4
+min_lr = max_lr * 0.1
+warmup_steps = 10
+max_steps = 50
+def get_lr(it):
+    # 1) linear warm u for warmup_iter steps 
+    if it < warmup_steps:
+        return max_lr * (it+1) / warmup_steps
+    
+    # 2) if ir> lr_decay_iters, return min learning rate 
+    if it > max_steps:
+        return min_lr
+    
+    # 3) in. between, use cosine decay down to min learning rate 
+    decay_ratio = (it - warmup_steps) / (max_lr - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5*(1+math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
+    return min_lr + coeff * (max_lr - min_lr)
 
     
 # Optimize
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps = 1e-8) # added more optimizer parameters, by taking reference from GPT 3 paper as these are not mentioned in GPT 2 papers but We believe that GPT 3 architecture is very similar to GPT2 but have huge dataset. 
 for i in range(50):
     t0 = time.time() # just something lazy
     x,y = train_loader.next_batch()
@@ -390,12 +412,13 @@ for i in range(50):
         - 
     """
     loss.backward()
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Adding new utility function here to clip the gradients. Calculating the global norms of the parameters. generally added after loss.backward() only. Norm will be high in the beginning but then as the tranining continues it gets stablizes and value sgets below 1 and this is normal. 
     optimizer.step()
     torch.cuda.synchronize() # for GPU, optional. this will make the GPU to wait for all the tasks scheduled by CPU before this line to run and then do what it is supposed to do 
     t1 = time.time()
     dt = (t1-t0)*1000 # time differenct in milliseconds
     tokens_per_sec = (train_loader.B * train_loader.T)/(t1-t0)
-    print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
+    print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}, norm: {norm:.4f}")
 
 import sys; sys.exit(0)
 
