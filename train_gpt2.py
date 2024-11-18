@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F 
 import math
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
 
 #### 4. The below ATTENTION Class is added fourth [CAUSAL SELF ATTENTION BLOCK]
 class CausalSelfAttention(nn.Module):
@@ -48,15 +50,21 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         
+        ##------------Start------
         # these are the calculations that follow
-        att = (q @ k.transpose(-2,-1))*(1.0/math.sqrt(k.size(-1)))
+        # att = (q @ k.transpose(-2,-1))*(1.0/math.sqrt(k.size(-1)))
         # att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf')) # auto regressive mask that makes sure that, the tokens only attend to the tokens before them and NEVER to tokens in the future 
-        att = F.softmax(att, dim =1 ) # normalizes the attentions so they sums to 1 always
-        y = att @ v # attention matrix multiple with values to do weighted sum of values of tokens that were found as interesting the previous step
-                    # (B,nh,T,T) * (B,nh,T,hs) --> (B,nh,T,hs)
+        # att = F.softmax(att, dim =1 ) # normalizes the attentions so they sums to 1 always
+        # y = att @ v # attention matrix multiple with values to do weighted sum of values of tokens that were found as interesting the previous step
+        #             # (B,nh,T,T) * (B,nh,T,hs) --> (B,nh,T,hs)
+        ##------------end------
+        
+        ## Flash Attention 
+            #  will be introduced here, it takes these 4 lines and impliments them in a very very fast manner. It is a kernal fusion operation  --> this kernal fusion is the one that "torch.compile" cannot find and fusion it. As it requirs algorithmeic re-write of how attention is imlimented using those 4 lines to merge them and write in lesser lines. Fa does more FLOPS than the attention done in thosen 4 lines here but FA is significantly faster (7.6x faster) Because, FA is very mindful about the memory hierarchy (The GPU element wise calculation, reading and writing to and fro from GPU and CPU stuff discussed in DataLoaderLite Optimizaiton Part, see that for reference) Like whats in HBA whats in SM fusions/orchestrates the computaion in such a way that we have very less reads/writes as in device computations are very very very faster than moving between GPU and CPU.  So even if we are doing lots of FLOPS it is still faster than loading the data between GPU and CPU 
+            ## This has reduced the compile time to 50% faster - earlier it was 550ms -  now it is 220ms. 
+            # Till now with all the GPU oeprations such as Torch.compile, flash attention, Moving the logits to bfloat16 from float32 we managed to reduce the time from 1200ms to 220ms. thats very big difference. 
 
-
-        # y = F.scaled_dot_product_attention(q,k,v is_casual=True) # FLASH ATTENTION
+        y = F.scaled_dot_product_attention(q,k,v) #, is_casual=True) # FLASH ATTENTION
         y = y.transpose(1,2).contiguous().view(B,T,C) # re-assemble all heads outputs side by side (concatenation operation)
         y = self.c_proj(y)
         return y
@@ -389,7 +397,8 @@ for i in range(50):
     print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
 
 import sys; sys.exit(0)
- 
+
+#####-----------------------------------
 # ## BEFORE OPTIMIZING TIME - 1200ms
 # # in this very first loop before optimizing the model speed time taken was 1200ms
 # train_loader = DataLoaderLite(B=16, T=1024)
@@ -414,6 +423,7 @@ import sys; sys.exit(0)
 #     print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
         
 # import sys; sys.exit(0)
+#####-----------------------------------
 
 ##### 9 ENDED HERE
 ##---------------------------------------------------------------------------------------------------------
