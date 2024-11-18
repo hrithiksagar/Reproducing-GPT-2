@@ -346,11 +346,17 @@ train_loader = DataLoaderLite(B=16, T=1024) # DataLoaderLite(B=4, T=32) changing
 # Get logits 
 model = GPT(GPTConfig)
 model.to(device)
+model = torch.compile(model)    ## torch.compile -> basically a compiler for Neural Networks such as GCC for C/C++ code. Extremely simple to use - model = torch.compile(model) . Makes the code lot faster
+# It was 899ms after few speeding up functions but then using torch.compile the time reduced to 550ms thats a very huge differece 
+## Speed up comes form reducing python overheads and GPU read/writes depending on model arch and batch size 
+# reduce the round trips to/fro from ()GPU to CPU and reciprocal) the memory and does kernal Fusion. First goes through the whole code and then intelligently decides on operations to perform
 
 # enabling TF32 using single line in pytorch
 torch.set_float32_matmul_precision('high') # tell pytroch what kind of kernals it should run for matmul 
     # this has decreased the time of optimizing, can be observed if you comment this line and run the optimizwer loop, time taken will be 1200ms, but this will make it to 800ms - so how? tf32 in principle offers a lot faster throughput https://youtu.be/l8pRSuU81PU?t=5966 (go back 20-30 sec) 
+    # tf32 will crop out mantissa of the Float32 hence, reducing the size while still being the, look at this image, path: "tf32 bf16.png" 
     
+
     
 # Optimize
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
@@ -359,7 +365,12 @@ for i in range(50):
     x,y = train_loader.next_batch()
     x,y = x.to(device) , y.to(device)
     optimizer.zero_grad()
-    logits, loss = model(x,y)
+    with torch.autocast(device_type=device, dtype = torch.bfloat16):
+        logits, loss = model(x,y)
+        # print(logits.dtype) # torch.bfloat16 Activations are in BF16
+        # print("model.transformer.wte.weight.dtype", model.transformer.wte.weight.dtype) # torch.float32 THIS IS STILL FLOAT32 not BF32/16
+        # WHat gets converted to what is not that clear in pytorch, not all layers wont convert to BF16 such as layernorm, softmax.... etc 
+        
     ##### STARTED GPU Stuff
     # import code; code.interact(local=locals())
     """
@@ -376,8 +387,33 @@ for i in range(50):
     dt = (t1-t0)*1000 # time differenct in milliseconds
     tokens_per_sec = (train_loader.B * train_loader.T)/(t1-t0)
     print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
-    
+
 import sys; sys.exit(0)
+ 
+# ## BEFORE OPTIMIZING TIME - 1200ms
+# # in this very first loop before optimizing the model speed time taken was 1200ms
+# train_loader = DataLoaderLite(B=16, T=1024)
+
+# # Get logits 
+# model = GPT(GPTConfig)
+# model.to(device)
+
+# # Optimize - 
+# optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+# for i in range(50):
+#     t0 = time.time() 
+#     x,y = train_loader.next_batch()
+#     x,y = x.to(device) , y.to(device)
+#     optimizer.zero_grad()
+#     logits, loss = model(x,y)
+#     loss.backward()
+#     optimizer.step()
+#     t1 = time.time()
+#     dt = (t1-t0)*1000 # time differenct in milliseconds
+#     tokens_per_sec = (train_loader.B * train_loader.T)/(t1-t0)
+#     print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
+        
+# import sys; sys.exit(0)
 
 ##### 9 ENDED HERE
 ##---------------------------------------------------------------------------------------------------------
