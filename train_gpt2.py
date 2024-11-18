@@ -347,6 +347,11 @@ train_loader = DataLoaderLite(B=16, T=1024) # DataLoaderLite(B=4, T=32) changing
 model = GPT(GPTConfig)
 model.to(device)
 
+# enabling TF32 using single line in pytorch
+torch.set_float32_matmul_precision('high') # tell pytroch what kind of kernals it should run for matmul 
+    # this has decreased the time of optimizing, can be observed if you comment this line and run the optimizwer loop, time taken will be 1200ms, but this will make it to 800ms - so how? tf32 in principle offers a lot faster throughput https://youtu.be/l8pRSuU81PU?t=5966 (go back 20-30 sec) 
+    
+    
 # Optimize
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
@@ -369,7 +374,8 @@ for i in range(50):
     torch.cuda.synchronize() # for GPU, optional. this will make the GPU to wait for all the tasks scheduled by CPU before this line to run and then do what it is supposed to do 
     t1 = time.time()
     dt = (t1-t0)*1000 # time differenct in milliseconds
-    print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms")
+    tokens_per_sec = (train_loader.B * train_loader.T)/(t1-t0)
+    print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
     
 import sys; sys.exit(0)
 
