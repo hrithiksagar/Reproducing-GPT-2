@@ -247,6 +247,7 @@ class GPT(nn.Module):
 ## if we did not crash and all the values are exaclty as equal to the original GPT wandbs then we get a confidence that it is working and we can further build the generation code 
 # now we should write main forward function: 6
 ##-------------------------------------------------------------------------------------------
+import time
 
 # ##### 8. Training loop
 # # Attempt to autoconnect to device thats available:
@@ -340,7 +341,7 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
-train_loader = DataLoaderLite(B=4, T=32)
+train_loader = DataLoaderLite(B=16, T=1024) # DataLoaderLite(B=4, T=32) changing from this to new higher value sbecause thats what the real world data be like. T =. max_sequence_length of the actual GPT 2 model 
 
 # Get logits 
 model = GPT(GPTConfig)
@@ -349,13 +350,28 @@ model.to(device)
 # Optimize
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
+    t0 = time.time() # just something lazy
     x,y = train_loader.next_batch()
     x,y = x.to(device) , y.to(device)
     optimizer.zero_grad()
     logits, loss = model(x,y)
+    ##### STARTED GPU Stuff
+    # import code; code.interact(local=locals())
+    """
+        >>> logits.dtype
+        torch.float32
+        - by default in pytorch tensors are stored in F32 when they are created. same case for all the activations, paramaters....
+        - Thats a very high memory, way too much. 
+        - 
+    """
     loss.backward()
     optimizer.step()
-    print(f"step {i}, loss: {loss.item()}")
+    torch.cuda.synchronize() # for GPU, optional. this will make the GPU to wait for all the tasks scheduled by CPU before this line to run and then do what it is supposed to do 
+    t1 = time.time()
+    dt = (t1-t0)*1000 # time differenct in milliseconds
+    print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms")
+    
+import sys; sys.exit(0)
 
 ##### 9 ENDED HERE
 ##---------------------------------------------------------------------------------------------------------
