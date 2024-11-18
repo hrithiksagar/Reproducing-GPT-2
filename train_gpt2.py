@@ -222,11 +222,11 @@ class GPT(nn.Module):
 
 # ##### 8. Training loop
 # # Attempt to autoconnect to device thats available:
-# device = 'cpu'
-# if torch.cuda.is_available():
-#     device = 'cuda'
-# elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-#     device = "mps" # APPLE silicon chip
+device = 'cpu'
+if torch.cuda.is_available():
+    device = 'cuda'
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    device = "mps" # APPLE silicon chip
     
 # # device = 'cpu' # OVERRIDE
 
@@ -282,8 +282,9 @@ class DataLoaderLite:
         self.T = T
         
         # at init load tokens form dick and store them in memory
-        with open('input.input.txt', 'r') as f:
+        with open('input.txt', 'r') as f:
             text = f.read
+        # text = text[:1000] if isinstance(text, str) else ""
         enc = tiktoken.get_encoding('gpt2')
         tokens = enc.encode(text)
         self.tokens = torch.tensor(tokens)
@@ -304,7 +305,23 @@ class DataLoaderLite:
         if self.current_position + (B * T + 1) > len(self. tokens): # if we run out of data then we loob back to 0 
             self.current_position = 0
         return x, y
-        
+
+train_loader = DataLoaderLite(B=4, T=32)
+
+# Get logits 
+model = GPT(GPTConfig)
+model.to(device)
+
+# Optimize
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+for i in range(50):
+    x,y = train_loader.next_batch()
+    x,y = x.to(device) , y.to(device)
+    optimizer.zero_grad()
+    logits, loss = model(x,y)
+    loss.backward()
+    optimizer.step()
+    printf(f"step {i}, loss: {loss.item()}")
 
 ##### 9 ENDED HERE
 ##---------------------------------------------------------------------------------------------------------
