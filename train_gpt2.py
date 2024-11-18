@@ -14,7 +14,7 @@ class CausalSelfAttention(nn.Module):
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
         # output projections
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
-        self.c_proj.NANOGPT_SCALE_INIT = 1
+        self.c_proj.NANOGPT_SCALE_INIT = 1 # Its kind of a flag for this module, attahcing this flag to make sure it wont conflictb with anything
         
         # regularization
         self.n_head = config.n_head
@@ -138,11 +138,14 @@ class GPT(nn.Module):
     
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean = 0.0, std = 0.02)
+            std = 0.02
+            if hasattr(module, 'NANOGPT_SCALE_INIT'):
+                std *= (2 * self.config.n_layer) ** -0.5 # Square root of number of residual layers 
+            torch.nn.init.normal_(module.weight, mean = 0.0, std = std)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(model.weight, mean=0.0, std = 0.02)
+            torch.nn.init.normal_(module.weight, mean=0.0, std = 0.02)
         
     
     ##### 6. Main Forward Function is written in this stage [MAIN FORWARD FUNCTION]
@@ -332,6 +335,10 @@ class DataLoaderLite:
         if self.current_position + (B * T + 1) > len(self. tokens): # if we run out of data then we loob back to 0 
             self.current_position = 0
         return x, y
+
+torch.manual_seed(1337)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(1337)
 
 train_loader = DataLoaderLite(B=4, T=32)
 
