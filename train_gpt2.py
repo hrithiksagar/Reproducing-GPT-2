@@ -123,7 +123,28 @@ class GPT(nn.Module):
         # Weights Sharing Scheme - As per the GPT 2 paper, they have implimented it in this way:
         self.transformer.wte.weight = self.lm_head.weight
             # Here, we are taking the wte.weight and redirectign it to point to the LM_Head, So this copies the data pointer then we will be left with single tensor which is going to be used Twice in the forward pass
-     
+            
+        # initialize parameters
+        self.apply(self._init_weights) # Apply will iterate all the modules of the sub modules and applies _init_weights function on them. 
+    
+    ### New function - we
+    ### Weights initialization: OpenAI GPT 2,3 papers havent mentioned much informaiton about it so have to go thorugh the Official tensorflow based code and have to read in between the lines. 
+        # They have used standard deviation of 0.02
+        # Initialized 
+            # bias with 0
+            # Token embeddings with 0.02
+            # position embeddings with 0.01 
+        # We shall mirror those here
+    
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean = 0.0, std = 0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(model.weight, mean=0.0, std = 0.02)
+        
+    
     ##### 6. Main Forward Function is written in this stage [MAIN FORWARD FUNCTION]
     def forward(self, idx, targets=None):
         # idx is of shape (B, T) - indices = idx = our tokens (inputs) = always of shape (B,T) B=Batch Dimension T=Time Dimension and T<B always as B is the minimum sequence length so these are arranged like a 2D layout, every single row is of size B 
