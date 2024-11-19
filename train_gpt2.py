@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F 
 import math
+import inspect
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
 
@@ -245,9 +246,31 @@ class GPT(nn.Module):
                 with torch.no_grad(): 
                     sd[k].copy_(sd_hf[k])
                     
-            
-
         return model
+    
+    def configure_optimizers(self, weight_decay, learning_rate, device):
+        # start with all of the candidate parameters (that require grad)
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+        # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
+        # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+        optim_groups = [
+            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': nodecay_params, 'weight_decay': 0.0}
+        ]
+        num_decay_params = sum(p.numel() for p in decay_params)
+        num_nodecay_params = sum(p.numel() for p in nodecay_params)
+        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
+        print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+        # Create AdamW optimizer and use the fused version if it is available
+        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and "cuda" in device
+        # if master_process:
+        print(f"using fused AdamW: {use_fused}")
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
+        return optimizer
     
 ##---------------------------------------------------------------------------------------------------------------------------------------
 # model = GPT.from_pretrained('gpt2')
@@ -349,7 +372,22 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
-train_loader = DataLoaderLite(B=16, T=1024) # DataLoaderLite(B=4, T=32) changing from this to new higher value sbecause thats what the real world data be like. T =. max_sequence_length of the actual GPT 2 model 
+# train_loader = DataLoaderLite(B=16, T=1024) # DataLoaderLite(B=4, T=32) changing from this to new higher value sbecause thats what the real world data be like. T =. max_sequence_length of the actual GPT 2 model 
+####---------Gradient Accumilation Start----------
+## Gradient Accumilation
+# GPT 3 used a batch size of 0.5Million, but we cant use tat amount batch size in B = 488 (0.5e6/1024 = 488), it will explode the GPUs, so to fit in such a amount of data we use something called as gradient Accumilations. 
+
+total_batch_size = 524288 # 2**19, ~0.5M in number of tokens
+B = 16 # Micro batch Size
+T = 1024 # equence Length
+assert total_batch_size % (B*T) == 0, "make sure total_batch_size is divisible by (B * T)"
+grad_accum_steps = total_batch_size // (B*T) # (2**19)/(16*1024) = 32 
+print(f"Total desired Batch size: {total_batch_size}")
+print(f"=> Calculated gradient accumilation steps: {grad_accum_steps}")
+
+train_loader = DataLoaderLite(B=B, T=T)
+####---------Gradient Accumilation End----------
+
 
 # Get logits 
 model = GPT(GPTConfig(vocab_size=50304)) # overriding vocab size because - 50257 is a ugly number [Odd number, not much power of 2s] 50304 is a good number with many powers of 2. this is like adding fake tokens in the vocab size. 
@@ -390,28 +428,32 @@ def get_lr(it):
 
     
 # Optimize
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps = 1e-8) # added more optimizer parameters, by taking reference from GPT 3 paper as these are not mentioned in GPT 2 papers but We believe that GPT 3 architecture is very similar to GPT2 but have huge dataset. 
+# optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps = 1e-8) # added more optimizer parameters, by taking reference from GPT 3 paper as these are not mentioned in GPT 2 papers but We believe that GPT 3 architecture is very similar to GPT2 but have huge dataset. 
+
+optimizer = model.configure_optimizers(weight_decay = 0.1, learning_rate=6e-4, device=device) # this is a new function to be written in class GPT
+
 for step in range(max_steps):
     t0 = time.time() # just something lazy
-    x,y = train_loader.next_batch()
-    x,y = x.to(device) , y.to(device)
     optimizer.zero_grad()
-    with torch.autocast(device_type=device, dtype = torch.bfloat16):
-        logits, loss = model(x,y)
-        # print(logits.dtype) # torch.bfloat16 Activations are in BF16
-        # print("model.transformer.wte.weight.dtype", model.transformer.wte.weight.dtype) # torch.float32 THIS IS STILL FLOAT32 not BF32/16
-        # WHat gets converted to what is not that clear in pytorch, not all layers wont convert to BF16 such as layernorm, softmax.... etc 
+    for micro_step in grad_accum_steps:
+        x,y = train_loader.next_batch()
+        x,y = x.to(device) , y.to(device)
+        with torch.autocast(device_type=device, dtype = torch.bfloat16):
+            logits, loss = model(x,y)
+            # print(logits.dtype) # torch.bfloat16 Activations are in BF16
+            # print("model.transformer.wte.weight.dtype", model.transformer.wte.weight.dtype) # torch.float32 THIS IS STILL FLOAT32 not BF32/16
+            # WHat gets converted to what is not that clear in pytorch, not all layers wont convert to BF16 such as layernorm, softmax.... etc 
+        loss.backward()
+        ##### STARTED GPU Stuff
+        # import code; code.interact(local=locals())
+        """
+            >>> logits.dtype
+            torch.float32
+            - by default in pytorch tensors are stored in F32 when they are created. same case for all the activations, paramaters....
+            - Thats a very high memory, way too much. 
+            - 
+        """
         
-    ##### STARTED GPU Stuff
-    # import code; code.interact(local=locals())
-    """
-        >>> logits.dtype
-        torch.float32
-        - by default in pytorch tensors are stored in F32 when they are created. same case for all the activations, paramaters....
-        - Thats a very high memory, way too much. 
-        - 
-    """
-    loss.backward()
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Adding new utility function here to clip the gradients. Calculating the global norms of the parameters. generally added after loss.backward() only. Norm will be high in the beginning but then as the tranining continues it gets stablizes and value sgets below 1 and this is normal. 
     
     # Determine and set learning rate for this iteration
@@ -423,7 +465,7 @@ for step in range(max_steps):
     t1 = time.time()
     dt = (t1-t0)*1000 # time differenct in milliseconds
     tokens_per_sec = (train_loader.B * train_loader.T)/(t1-t0)
-    print(f"step {step}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}, norm: {norm:.4f}, step: {step:4d}")
+    print(f"step {step}, lr: {lr:.4e}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}, norm: {norm:.4f}, step: {step:4d}")
 
 import sys; sys.exit(0)
 
@@ -519,3 +561,5 @@ import sys; sys.exit(0)
     
 ###### 6 END
 ##------------------------------------------------------------------------------
+
+
