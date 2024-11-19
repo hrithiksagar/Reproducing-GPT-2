@@ -435,7 +435,8 @@ optimizer = model.configure_optimizers(weight_decay = 0.1, learning_rate=6e-4, d
 for step in range(max_steps):
     t0 = time.time() # just something lazy
     optimizer.zero_grad()
-    for micro_step in grad_accum_steps:
+    loss_accum = 0.0
+    for micro_step in range(grad_accum_steps):
         x,y = train_loader.next_batch()
         x,y = x.to(device) , y.to(device)
         with torch.autocast(device_type=device, dtype = torch.bfloat16):
@@ -443,6 +444,8 @@ for step in range(max_steps):
             # print(logits.dtype) # torch.bfloat16 Activations are in BF16
             # print("model.transformer.wte.weight.dtype", model.transformer.wte.weight.dtype) # torch.float32 THIS IS STILL FLOAT32 not BF32/16
             # WHat gets converted to what is not that clear in pytorch, not all layers wont convert to BF16 such as layernorm, softmax.... etc 
+        loss = loss / grad_accum_steps
+        loss_accum += loss.detach()
         loss.backward()
         ##### STARTED GPU Stuff
         # import code; code.interact(local=locals())
@@ -464,8 +467,10 @@ for step in range(max_steps):
     torch.cuda.synchronize() # for GPU, optional. this will make the GPU to wait for all the tasks scheduled by CPU before this line to run and then do what it is supposed to do 
     t1 = time.time()
     dt = (t1-t0)*1000 # time differenct in milliseconds
-    tokens_per_sec = (train_loader.B * train_loader.T)/(t1-t0)
-    print(f"step {step}, lr: {lr:.4e}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}, norm: {norm:.4f}, step: {step:4d}")
+    tokens_processed = train_loader.B * train_loader.T * grad_accum_steps
+    tokens_per_sec = tokens_processed / dt
+    # tokens_per_sec = (train_loader.B * train_loader.T)/(t1-t0)
+    print(f"loss: {loss_accum.item():.6f} ,lr: {lr:.4e}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}, norm: {norm:.4f}, step: {step:4d}")
 
 import sys; sys.exit(0)
 
