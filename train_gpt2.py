@@ -391,7 +391,7 @@ def get_lr(it):
     
 # Optimize
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps = 1e-8) # added more optimizer parameters, by taking reference from GPT 3 paper as these are not mentioned in GPT 2 papers but We believe that GPT 3 architecture is very similar to GPT2 but have huge dataset. 
-for i in range(50):
+for step in range(max_steps):
     t0 = time.time() # just something lazy
     x,y = train_loader.next_batch()
     x,y = x.to(device) , y.to(device)
@@ -413,12 +413,17 @@ for i in range(50):
     """
     loss.backward()
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Adding new utility function here to clip the gradients. Calculating the global norms of the parameters. generally added after loss.backward() only. Norm will be high in the beginning but then as the tranining continues it gets stablizes and value sgets below 1 and this is normal. 
+    
+    # Determine and set learning rate for this iteration
+    lr = get_lr(step)
+    for param_group in optimizer.param_groups: # this is the way to set learning rate in pytorch
+        param_group['lr'] = lr
     optimizer.step()
     torch.cuda.synchronize() # for GPU, optional. this will make the GPU to wait for all the tasks scheduled by CPU before this line to run and then do what it is supposed to do 
     t1 = time.time()
     dt = (t1-t0)*1000 # time differenct in milliseconds
     tokens_per_sec = (train_loader.B * train_loader.T)/(t1-t0)
-    print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}, norm: {norm:.4f}")
+    print(f"step {step}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}, norm: {norm:.4f}, step: {step:4d}")
 
 import sys; sys.exit(0)
 
