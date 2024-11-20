@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import os
 import torch
 import torch.nn as nn
 from torch.nn import functional as F 
@@ -368,6 +369,42 @@ class DataLoaderLite:
             self.current_position = 0
         return x, y
 
+
+####---------------------------
+# # DISTRIBUTED DATA PARALLEL
+#  torchrun --standalone --nproc_per_node=2 train_gpt2.py
+from torch.distributed import init_process_group, destroy_process_group
+
+# Setup DDP (DISTRIBUTED DATA PARALLEL)
+# Torch run commandsets the env variables RANk, LOCAL_RANK, and WORLD_SIZE
+ddp = int(os.environ.get('RANK', -1)) != -1 # IS this a DDP run? 
+if ddp:
+    # use of DDP atm demands CUDA, we set the device appropriately according to rank. 
+    assert torch.cuda.is_available(), " for now i think we need CUDA for DDP"
+    init_process_group(backend='nccl')
+    ddp_rank = int(os.environ['RANK'])
+    ddp_local_rank = int(os.environ['LOCAL_RANK'])
+    ddp_world_rank = int(os.environ['WORLD_RANK'])
+    device = f'cuda:{ddp_local_rank}'
+    torch.cuda.set_device(device)
+    master_process = ddp_rank == 0 # this process will do logging, checkpointing
+    print("using ddp")
+else:
+    # vanilla, non-ddp run
+    ddp_rank = 0
+    ddp_local_rank = 0 
+    ddp_world_size = 1
+    master_process = True
+    # Attempt to autodetect device
+    device = 'cpu'
+    if torch.cuda.is_available():
+        device = 'cuda'
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = "mps" # APPLE silicon chip
+    print(f"Using device: {device}")
+    print("Not using ddp")
+    
+####---------------------------
 torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
@@ -380,12 +417,17 @@ if torch.cuda.is_available():
 total_batch_size = 524288 # 2**19, ~0.5M in number of tokens
 B = 16 # Micro batch Size
 T = 1024 # equence Length
-assert total_batch_size % (B*T) == 0, "make sure total_batch_size is divisible by (B * T)"
-grad_accum_steps = total_batch_size // (B*T) # (2**19)/(16*1024) = 32 
-print(f"Total desired Batch size: {total_batch_size}")
-print(f"=> Calculated gradient accumilation steps: {grad_accum_steps}")
+assert total_batch_size % (B*T*ddp_world_size) == 0, "make sure total_batch_size is divisible by (B * T * ddp_world_size)"
+grad_accum_steps = total_batch_size // (B*T*ddp_world_size) # (2**19)/(16*1024) = 32 
+if master_process: 
+    print(f"Total desired Batch size: {total_batch_size}")
+    print(f"=> Calculated gradient accumilation steps: {grad_accum_steps}")
 
-train_loader = DataLoaderLite(B=B, T=T)
+# print("I am GPU", ddp_rank)
+# print("Bye Bye Bye")
+# import sys; sys.exit(0)
+train_loader = DataLoaderLite(B=B, T=T, process_rank = ddp_rank, num_processes =ddp_world_size)
+# we want multiple GPUS to work on different partsof the data insetad of the all GPUS working on same data 
 ####---------Gradient Accumilation End----------
 
 
