@@ -335,41 +335,96 @@ elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
 # the above 8th Block will optimize for 1 batch
 # but we want to optimize for XY batches and create a small data loader that makes sure that we are always getting a fresh batch 
 
-import tiktoken
+# import tiktoken
+
+# class DataLoaderLite:
+#     def __init__(self, B, T):
+#         self.B = B
+#         self.T = T
+        
+#         # at init load tokens form dick and store them in memory
+#         with open('input.txt', 'r') as f:
+#             text = f.read()
+            
+#         # print(f"text type: {type(text)}, text value: {text}")
+        
+#         enc = tiktoken.get_encoding('gpt2')
+#         tokens = enc.encode(text)
+#         self.tokens = torch.tensor(tokens)
+#         print(f"loaded {len(self.tokens)} tokens")
+#         print(f"1 epoch = {len(self.tokens)//(B*T)} batches") # prints number of batches in a single epoch iterating over this dataset  
+        
+#         # State
+#         self.current_position = 0 # start at position 0
+            
+#     def next_batch(self):
+#         B, T = self.B, self.T
+#         buf = self.tokens[self.current_position: self.current_position+B*T+1]
+#         x = (buf [:-1]). view(B, T) # inputs
+#         y = (buf [1:]).view(B,T) # targets
+#         # advance the position in the tensor
+#         self. current_position += B * T # its important to always advance our position by B*T 
+#         # if loading the next batch would be out of bounds, reset
+#         if self.current_position + (B * T + 1) > len(self. tokens): # if we run out of data then we loob back to 0 
+#             self.current_position = 0
+#         return x, y
+
+
+# #####------------- Final modified DataLoaderLite for training on real world data-----------------
+import numpt as np
+def load_tokens(filename):
+    npt = np.load(filename)
+    npt = npt.astype(np.int32) # Added after video ended 
+    ppt = torch.tensor(npt, dtype=torch.long)
+    return ppt
+
 
 class DataLoaderLite:
-    def __init__(self, B, T):
+    def __init__(self, B, T, process_rank, num_processes, split):
         self.B = B
         self.T = T
+        self.process_rank = process_rank
+        self.num_processes = num_processes
+        assert split in {'train', 'val'} #  from the list of files in data_root available, we ony leed train and val 
         
-        # at init load tokens form dick and store them in memory
-        with open('input.txt', 'r') as f:
-            text = f.read()
-            
-        # print(f"text type: {type(text)}, text value: {text}")
+        # get the shard filenames
+        data_root = "edu_fineweb10B"
+        shards = os.listdir(data_root)
+        print("os.listdir(data_root) :",shards) # os.listdir(data_root): ['train_1.npy', 'train_2.npy', 'val_1.npy', 'val_2.npy', 'test_1.npy'] ## prints all the files available 
+        shards = [s for s in shards if split in s]
+        print("shards = [s for s in shards if split in s] :",shards) # As from the list of files available, we ony leed train and val, we are splitting to only find train and val and use them  ; from the list of files available, we ony leed train and val => shards = ['train_1.npy', 'train_2.npy'] and ; shards = ['train_1.npy', 'train_2.npy']=> shards = ['val_1.npy', 'val_2.npy']
+        shards = sorted(shards)
+        print("shards = sorted(shards) :",shards) # sorts the files in alphabetical order, shards = ['train_1.npy', 'train_2.npy']
+        shads= [os.path.join(data_root, s) for s in shards]
+        print("shads= [os.path.join(data_root, s) for s in shards] :",shards) # shards = ['train_1.npy', 'train_2.npy']; shards = ['edu_fineweb10B/train_1.npy', 'edu_fineweb10B/train_2.npy']
+        self.shards = shards # contains full paths of all files: shards = ['train_1.npy', 'train_2.npy']; shards = ['edu_fineweb10B/train_1.npy', 'edu_fineweb10B/train_2.npy']
         
-        enc = tiktoken.get_encoding('gpt2')
-        tokens = enc.encode(text)
-        self.tokens = torch.tensor(tokens)
-        print(f"loaded {len(self.tokens)} tokens")
-        print(f"1 epoch = {len(self.tokens)//(B*T)} batches") # prints number of batches in a single epoch iterating over this dataset  
+        assert len(shards) > 0, f"No shards found for the split {split}"
+        if master_process:
+            print(f"found {len(shards)} shards for split {split}")
+        self.reset()
         
-        # State
-        self.current_position = 0 # start at position 0
-            
+    def reset(self):
+        # state, init at shard zero
+        self.current_shard = 0
+        self.tokens = load_tokens(self.shards[self.current_shard])
+        self.current_position = self.B * self.T * self.process_rank
+        
     def next_batch(self):
         B, T = self.B, self.T
-        buf = self.tokens[self.current_position: self.current_position+B*T+1]
-        x = (buf [:-1]). view(B, T) # inputs
-        y = (buf [1:]).view(B,T) # targets
+        buf = self.tokens[self.current_position : self.current_position+B*T+1]
+        x = (buf[:-1]).view(B, T) # inputs
+        y = (buf[1:]).view(B, T) # targets
         # advance the position in the tensor
-        self. current_position += B * T # its important to always advance our position by B*T 
-        # if loading the next batch would be out of bounds, reset
-        if self.current_position + (B * T + 1) > len(self. tokens): # if we run out of data then we loob back to 0 
-            self.current_position = 0
+        self.current_position += B * T * self.num_processes
+        # if loading the next batch would be out of bounds, advance to next shard
+        if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
+            self.current_shard = (self.current_shard + 1) % len(self.shards)
+            self.tokens = load_tokens(self.shards[self.current_shard])
+            self.current_position = B * T * self.process_rank
         return x, y
-
-
+        
+# ####-----------------------------------------
 ####---------------------------
 # # DISTRIBUTED DATA PARALLEL
 #  torchrun --standalone --nproc_per_node=2 train_gpt2.py
@@ -403,6 +458,8 @@ else:
         device = "mps" # APPLE silicon chip
     print(f"Using device: {device}")
     print("Not using ddp")
+
+device_type = 'cuda' if 'cuda' in device else 'cpu'
     
 ####---------------------------
 torch.manual_seed(1337)
@@ -435,10 +492,10 @@ train_loader = DataLoaderLite(B=B, T=T, process_rank = ddp_rank, num_processes =
 model = GPT(GPTConfig(vocab_size=50304)) # overriding vocab size because - 50257 is a ugly number [Odd number, not much power of 2s] 50304 is a good number with many powers of 2. this is like adding fake tokens in the vocab size. 
     # So just by making the voca size number from Ugly to good we reduced the computation speed by 20ms from 220ms to 199ms 
 model.to(device)
-model = torch.compile(model)    ## torch.compile -> basically a compiler for Neural Networks such as GCC for C/C++ code. Extremely simple to use - model = torch.compile(model) . Makes the code lot faster
-# It was 899ms after few speeding up functions but then using torch.compile the time reduced to 550ms thats a very huge differece 
-## Speed up comes form reducing python overheads and GPU read/writes depending on model arch and batch size 
-# reduce the round trips to/fro from ()GPU to CPU and reciprocal) the memory and does kernal Fusion. First goes through the whole code and then intelligently decides on operations to perform
+# model = torch.compile(model)    ## torch.compile -> basically a compiler for Neural Networks such as GCC for C/C++ code. Extremely simple to use - model = torch.compile(model) . Makes the code lot faster
+# # It was 899ms after few speeding up functions but then using torch.compile the time reduced to 550ms thats a very huge differece 
+# ## Speed up comes form reducing python overheads and GPU read/writes depending on model arch and batch size 
+# # reduce the round trips to/fro from ()GPU to CPU and reciprocal) the memory and does kernal Fusion. First goes through the whole code and then intelligently decides on operations to perform
 
 # enabling TF32 using single line in pytorch
 torch.set_float32_matmul_precision('high') # tell pytroch what kind of kernals it should run for matmul 
@@ -449,10 +506,18 @@ torch.set_float32_matmul_precision('high') # tell pytroch what kind of kernals i
     # Taken from GPT 3 papers. Uses Cosine Decary Learning Scheduler with warmup
     # lr starts right at 0 and then linearly ranks up over some amount of time and then comes down with the cosine sort of shape refer the screen shot "lr_cosine_decay.png" come down to minimum learning rate
     
-max_lr = 3e-4
+#### MOVING MODEL TO DDP (parallel program) ---- Added almost in the end (3:17 min) 
+use_compile = False
+if use_compile:
+    model = torch.compile(model)
+if ddp:
+    model = DDP(model, device_ids = [ddp_local_rank])
+raw_model = model.module if ddp else model # always contains the "raw" unwrapped model 
+
+max_lr = 6e-4 # 4e-4
 min_lr = max_lr * 0.1
-warmup_steps = 10
-max_steps = 50
+warmup_steps = 715 # 10
+max_steps = 19073 # 50 # 19,073 steps is ~1 epoch, if data is 10B tokens and
 def get_lr(it):
     # 1) linear warm u for warmup_iter steps 
     if it < warmup_steps:
@@ -472,10 +537,63 @@ def get_lr(it):
 # Optimize
 # optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps = 1e-8) # added more optimizer parameters, by taking reference from GPT 3 paper as these are not mentioned in GPT 2 papers but We believe that GPT 3 architecture is very similar to GPT2 but have huge dataset. 
 
-optimizer = model.configure_optimizers(weight_decay = 0.1, learning_rate=6e-4, device=device) # this is a new function to be written in class GPT
+# optimizer = model.configure_optimizers(weight_decay = 0.1, learning_rate=6e-4, device=device) # this is a new function to be written in class GPT
+optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device_type=device_type) # added almost in the end (3 hr 17 min)
+
+# create the log directory we will write checkpoints to and log to
+log_dir = "log"
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, f"log.txt")
+with open(log_file, "w") as f: # open for writing to clear the file
+    pass
+
 
 for step in range(max_steps):
     t0 = time.time() # just something lazy
+    last_step = (step == max_steps-1)
+    
+    ##### (START) Large scale training code
+    
+    # Once in a while evaluate our validation loss
+    if step % 250 == 0 or last_step:
+        model.eval()
+        val_loader.reset()
+        with torch.no_grad():
+            val_loss_accum = 0.0
+            val_loss_steps = 20
+            for _ in range(val_loss_steps):
+                x, y = val_loader.next_batch()
+                x, y = x.to(device), y.to(device)
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                    logits, loss = model(x,y)
+                loss = loss/ val_loss_steps
+                val_loss_accum += loss.detach()
+                
+        if ddp:
+            dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
+            
+        if master_process:
+            print(f"Validation loss: {val_loss_accum.item():.4f}")
+            with open(log_file, "a") as f:
+                f.write(f"{step} val {val_loss_accum.item():.4f}\n")
+            if step>0 and (step % 5000 == 0 or last_step):
+                # optionally write model checkpoints
+                checkpoint_path = os.path.join(log_dir, f"model_{step:05d}.pt")
+                checkpoint = {
+                    'model':raw_model.state_dict(),
+                    'config':raw_model.config,
+                    'steo':step,
+                    'val_loss': val_loss_accum.item()
+                }
+                # Yu might also want to add optimizer.state_dict() and rng seeds etc.., if you wanted to more exactly resume training
+                torch.save(checkpoint, checkpoint_path)
+                
+    # once in a while evaliate hellaswag
+    if (step % 250 ==0 or last_step) and (not use_compile):
+        num_currect_norm = 0
+        num_total = 0
+    
+    ##### (END) Large Scale training code
     optimizer.zero_grad()
     loss_accum = 0.0
     for micro_step in range(grad_accum_steps):
@@ -498,7 +616,8 @@ for step in range(max_steps):
             - Thats a very high memory, way too much. 
             - 
         """
-        
+    if ddp:
+        dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)    
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Adding new utility function here to clip the gradients. Calculating the global norms of the parameters. generally added after loss.backward() only. Norm will be high in the beginning but then as the tranining continues it gets stablizes and value sgets below 1 and this is normal. 
     
     # Determine and set learning rate for this iteration
@@ -506,15 +625,25 @@ for step in range(max_steps):
     for param_group in optimizer.param_groups: # this is the way to set learning rate in pytorch
         param_group['lr'] = lr
     optimizer.step()
-    torch.cuda.synchronize() # for GPU, optional. this will make the GPU to wait for all the tasks scheduled by CPU before this line to run and then do what it is supposed to do 
+    if device_type == 'cuda':    
+        torch.cuda.synchronize() # for GPU, optional. this will make the GPU to wait for all the tasks scheduled by CPU before this line to run and then do what it is supposed to do 
     t1 = time.time()
-    dt = (t1-t0)*1000 # time differenct in milliseconds
-    tokens_processed = train_loader.B * train_loader.T * grad_accum_steps
+    dt = (t1-t0) # Time diff in seconds # *1000 # time differenct in milliseconds
+    tokens_processed = train_loader.B * train_loader.T * grad_accum_steps * ddp_world_size
     tokens_per_sec = tokens_processed / dt
     # tokens_per_sec = (train_loader.B * train_loader.T)/(t1-t0)
-    print(f"loss: {loss_accum.item():.6f} ,lr: {lr:.4e}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}, norm: {norm:.4f}, step: {step:4d}")
+    ## (START) Added for large scale training
+    if master_process:
+        print(f"step {step:5d} | loss: {loss_accum.item():.6f} | lr {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
+        with open(log_file, "a") as f:
+            f.write(f"{step} train {loss_accum.item():.6f}\n")
+    ## (END) Added for large scale training       
+    # print(f"loss: {loss_accum.item():.6f} ,lr: {lr:.4e}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}, norm: {norm:.4f}, step: {step:4d}")
 
-import sys; sys.exit(0)
+if ddp:
+    destroy_process_group()
+    
+# import sys; sys.exit(0)
 
 #####-----------------------------------
 # ## BEFORE OPTIMIZING TIME - 1200ms
