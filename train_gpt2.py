@@ -1,3 +1,4 @@
+# Repo link: https://github.com/karpathy/build-nanogpt/blob/master/train_gpt2.py 
 from dataclasses import dataclass
 import os
 import torch
