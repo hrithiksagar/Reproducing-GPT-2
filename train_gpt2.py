@@ -372,7 +372,7 @@ elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
 
 
 # #####------------- Final modified DataLoaderLite for training on real world data-----------------
-import numpt as np
+import numpy as np
 def load_tokens(filename):
     npt = np.load(filename)
     npt = npt.astype(np.int32) # Added after video ended 
@@ -389,17 +389,19 @@ class DataLoaderLite:
         assert split in {'train', 'val'} #  from the list of files in data_root available, we ony leed train and val 
         
         # get the shard filenames
-        data_root = "edu_fineweb10B"
+        # data_root = "edu_fineweb10B"
+        data_root = "/data/circulars/iiith/hrithik/Reproducing-GPT-2/edu_fineweb10B"
         shards = os.listdir(data_root)
-        print("os.listdir(data_root) :",shards) # os.listdir(data_root): ['train_1.npy', 'train_2.npy', 'val_1.npy', 'val_2.npy', 'test_1.npy'] ## prints all the files available 
+        # print("os.listdir(data_root) :",shards) # os.listdir(data_root): ['train_1.npy', 'train_2.npy', 'val_1.npy', 'val_2.npy', 'test_1.npy'] ## prints all the files available 
         shards = [s for s in shards if split in s]
-        print("shards = [s for s in shards if split in s] :",shards) # As from the list of files available, we ony leed train and val, we are splitting to only find train and val and use them  ; from the list of files available, we ony leed train and val => shards = ['train_1.npy', 'train_2.npy'] and ; shards = ['train_1.npy', 'train_2.npy']=> shards = ['val_1.npy', 'val_2.npy']
+        # # print("shards = [s for s in shards if split in s] :",shards) # As from the list of files available, we ony leed train and val, we are splitting to only find train and val and use them  ; from the list of files available, we ony leed train and val => shards = ['train_1.npy', 'train_2.npy'] and ; shards = ['train_1.npy', 'train_2.npy']=> shards = ['val_1.npy', 'val_2.npy']
         shards = sorted(shards)
-        print("shards = sorted(shards) :",shards) # sorts the files in alphabetical order, shards = ['train_1.npy', 'train_2.npy']
-        shads= [os.path.join(data_root, s) for s in shards]
-        print("shads= [os.path.join(data_root, s) for s in shards] :",shards) # shards = ['train_1.npy', 'train_2.npy']; shards = ['edu_fineweb10B/train_1.npy', 'edu_fineweb10B/train_2.npy']
-        self.shards = shards # contains full paths of all files: shards = ['train_1.npy', 'train_2.npy']; shards = ['edu_fineweb10B/train_1.npy', 'edu_fineweb10B/train_2.npy']
+        # # print("shards = sorted(shards) :",shards) # sorts the files in alphabetical order, shards = ['train_1.npy', 'train_2.npy']
         
+        shads= [os.path.join(data_root, s) for s in shards]
+        # print("shads= [os.path.join(data_root, s) for s in shards] :",shards) # shards = ['train_1.npy', 'train_2.npy']; shards = ['edu_fineweb10B/train_1.npy', 'edu_fineweb10B/train_2.npy']
+        self.shards = shards # contains full paths of all files: shards = ['train_1.npy', 'train_2.npy']; shards = ['edu_fineweb10B/train_1.npy', 'edu_fineweb10B/train_2.npy']
+    
         assert len(shards) > 0, f"No shards found for the split {split}"
         if master_process:
             print(f"found {len(shards)} shards for split {split}")
@@ -484,7 +486,8 @@ if master_process:
 # print("I am GPU", ddp_rank)
 # print("Bye Bye Bye")
 # import sys; sys.exit(0)
-train_loader = DataLoaderLite(B=B, T=T, process_rank = ddp_rank, num_processes =ddp_world_size)
+train_loader = DataLoaderLite(B=B, T=T, process_rank = ddp_rank, num_processes =ddp_world_size, split="train")
+val_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="val")
 # we want multiple GPUS to work on different partsof the data insetad of the all GPUS working on same data 
 ####---------Gradient Accumilation End----------
 
@@ -593,8 +596,75 @@ for step in range(max_steps):
     if (step % 250 ==0 or last_step) and (not use_compile):
         num_currect_norm = 0
         num_total = 0
-    
+        for i, example in enumerate(iterate_examples("val")):
+            # only process examples where i % ddp_world_size == ddp_rank
+            if i % ddp_world_size != ddp_rank:
+                continue 
+            # Render the examples into tokens and labels
+            _, tokens, mask, label = render_example(example)
+            tokens = tokens.to(device)
+            mask = mask.to(device)
+            # Get the logits
+            with torch.no_grad():
+                with torch.autocast(device_type=device_type, dtype = torch.bfloat16):
+                    logits, loss = model(tokens)
+                pred_norm = get_most_likely_row(tokens, mask, logits)
+            num_total += 1
+            num_currect_norm += int(pred_norm == label)
+            
+        # Reduce the stats across all process
+        if ddp:
+            num_total = torch.tensor(num_total, dtype=torch.long, device=device)
+            num_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=device)
+            dist.all_reduce(num_total, op=dist.ReduceOp.SUM)
+            dist.all_reduce(num_correct_norm, op=dist.ReduceOp.SUM)
+            num_total = num_total.item()
+            num_correct_norm = num_correct_norm.item()
+        acc_norm = num_correct_norm / num_total
+        if master_process:
+            print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}")
+            with open(log_file, "a") as f:
+                f.write(f"{step} hella {acc_norm:.4f}\n")
+    # once in a while generate from the model (except step 0, which is noise)
+    if ((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
+        model.eval()
+        num_return_sequences = 4
+        max_length = 32
+        tokens = enc.encode("Hello, I'm a language model,")
+        tokens = torch.tensor(tokens, dtype=torch.long)
+        tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+        xgen = tokens.to(device)
+        sample_rng = torch.Generator(device=device)
+        sample_rng.manual_seed(42 + ddp_rank)
+        while xgen.size(1) < max_length:
+            # forward the model to get the logits
+            with torch.no_grad():
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                    logits, loss = model(xgen) # (B, T, vocab_size)
+                # take the logits at the last position
+                logits = logits[:, -1, :] # (B, vocab_size)
+                # get the probabilities
+                probs = F.softmax(logits, dim=-1)
+                # do top-k sampling of 50 (huggingface pipeline default)
+                # topk_probs here becomes (5, 50), topk_indices is (5, 50)
+                topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+                # select a token from the top-k probabilities
+                # note: multinomial does not demand the input to sum to 1
+                ix = torch.multinomial(topk_probs, 1, generator=sample_rng) # (B, 1)
+                # gather the corresponding indices
+                xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
+                # append to the sequence
+                xgen = torch.cat((xgen, xcol), dim=1)
+        # print the generated text
+        for i in range(num_return_sequences):
+            tokens = xgen[i, :max_length].tolist()
+            decoded = enc.decode(tokens)
+            print(f"rank {ddp_rank} sample {i}: {decoded}")
+
+            
+            
     ##### (END) Large Scale training code
+    model.train()
     optimizer.zero_grad()
     loss_accum = 0.0
     for micro_step in range(grad_accum_steps):
@@ -620,7 +690,6 @@ for step in range(max_steps):
     if ddp:
         dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)    
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Adding new utility function here to clip the gradients. Calculating the global norms of the parameters. generally added after loss.backward() only. Norm will be high in the beginning but then as the tranining continues it gets stablizes and value sgets below 1 and this is normal. 
-    
     # Determine and set learning rate for this iteration
     lr = get_lr(step)
     for param_group in optimizer.param_groups: # this is the way to set learning rate in pytorch
