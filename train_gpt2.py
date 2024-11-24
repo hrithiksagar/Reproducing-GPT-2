@@ -396,7 +396,7 @@ class DataLoaderLite:
         # get the shard filenames
         # data_root = "edu_fineweb10B"
         data_root = "/data/circulars/iiith/hrithik/Reproducing-GPT-2/edu_fineweb10B"
-        shards = os.listdir(data_root)
+        shards = os.listdir(data_root) # shards are numpy files, just storing a numpy array similar to torch tensors
         # print("os.listdir(data_root) :",shards) # os.listdir(data_root): ['train_1.npy', 'train_2.npy', 'val_1.npy', 'val_2.npy', 'test_1.npy'] ## prints all the files available 
         shards = [s for s in shards if split in s]
         # # print("shards = [s for s in shards if split in s] :",shards) # As from the list of files available, we ony leed train and val, we are splitting to only find train and val and use them  ; from the list of files available, we ony leed train and val => shards = ['train_1.npy', 'train_2.npy'] and ; shards = ['train_1.npy', 'train_2.npy']=> shards = ['val_1.npy', 'val_2.npy']
