@@ -8,6 +8,9 @@ import math
 import inspect
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
+from hellaswag import render_example, iterate_examples
+import os
+os.chdir("/data/circulars/iiith/hrithik/Reproducing-GPT-2/edu_fineweb10B")
 
 #### 4. The below ATTENTION Class is added fourth [CAUSAL SELF ATTENTION BLOCK]
 class CausalSelfAttention(nn.Module):
@@ -374,7 +377,9 @@ elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
 # #####------------- Final modified DataLoaderLite for training on real world data-----------------
 import numpy as np
 def load_tokens(filename):
+    print("Attempting to load file 1:", filename)
     npt = np.load(filename)
+    # print("Attempting to load file 2:", filename)
     npt = npt.astype(np.int32) # Added after video ended 
     ppt = torch.tensor(npt, dtype=torch.long)
     return ppt
@@ -428,6 +433,30 @@ class DataLoaderLite:
         return x, y
         
 # ####-----------------------------------------
+
+# -----------------------------------------------------------------------------
+# helper function for HellaSwag eval
+# takes tokens, mask, and logits, returns the index of the completion with the lowest loss
+
+def get_most_likely_row(tokens, mask, logits):
+    # evaluate the autoregressive loss at all positions
+    shift_logits = (logits[..., :-1, :]).contiguous()
+    shift_tokens = (tokens[..., 1:]).contiguous()
+    flat_shift_logits = shift_logits.view(-1, shift_logits.size(-1))
+    flat_shift_tokens = shift_tokens.view(-1)
+    shift_losses = F.cross_entropy(flat_shift_logits, flat_shift_tokens, reduction='none')
+    shift_losses = shift_losses.view(tokens.size(0), -1)
+    # now get the average loss just for the completion region (where mask == 1), in each row
+    shift_mask = (mask[..., 1:]).contiguous() # we must shift mask, so we start at the last prompt token
+    masked_shift_losses = shift_losses * shift_mask
+    # sum and divide by the number of 1s in the mask
+    sum_loss = masked_shift_losses.sum(dim=1)
+    avg_loss = sum_loss / shift_mask.sum(dim=1)
+    # now we have a loss for each of the 4 completions
+    # the one with the lowest loss should be the most likely
+    pred_norm = avg_loss.argmin().item()
+    return pred_norm
+
 ####---------------------------
 # # DISTRIBUTED DATA PARALLEL
 #  torchrun --standalone --nproc_per_node=2 train_gpt2.py
@@ -542,7 +571,7 @@ def get_lr(it):
 # optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps = 1e-8) # added more optimizer parameters, by taking reference from GPT 3 paper as these are not mentioned in GPT 2 papers but We believe that GPT 3 architecture is very similar to GPT2 but have huge dataset. 
 
 # optimizer = model.configure_optimizers(weight_decay = 0.1, learning_rate=6e-4, device=device) # this is a new function to be written in class GPT
-optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device_type=device_type) # added almost in the end (3 hr 17 min)
+optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device = device) # added almost in the end (3 hr 17 min)
 
 # create the log directory we will write checkpoints to and log to
 log_dir = "log"
@@ -594,7 +623,7 @@ for step in range(max_steps):
                 
     # once in a while evaliate hellaswag
     if (step % 250 ==0 or last_step) and (not use_compile):
-        num_currect_norm = 0
+        num_correct_norm = 0
         num_total = 0
         for i, example in enumerate(iterate_examples("val")):
             # only process examples where i % ddp_world_size == ddp_rank
@@ -610,7 +639,7 @@ for step in range(max_steps):
                     logits, loss = model(tokens)
                 pred_norm = get_most_likely_row(tokens, mask, logits)
             num_total += 1
-            num_currect_norm += int(pred_norm == label)
+            num_correct_norm += int(pred_norm == label)
             
         # Reduce the stats across all process
         if ddp:
